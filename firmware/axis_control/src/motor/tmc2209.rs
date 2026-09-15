@@ -13,7 +13,7 @@ use embassy_sync::{
     mutex::{Mutex, MutexGuard},
 };
 
-use tmc2209_uart::{Gconf, ReadableRegister, WritableRegister};
+use tmc2209_uart::{DrvStatus, Gconf, ReadableRegister, WritableRegister};
 pub use tmc2209_uart::{MicrostepResolution, Tmc2209};
 
 use crate::motor::{Direction, MotorDriver, MotorError};
@@ -23,9 +23,9 @@ pub type Tmc2209Mutex<UART> = Mutex<CriticalSectionRawMutex, Tmc2209<UART>>;
 pub type Tmc2209MutexGuard<'a, UART> = MutexGuard<'a, CriticalSectionRawMutex, Tmc2209<UART>>;
 
 /// TMC2209 driver that provides a [`MotorDriver`] compatible interface for controlling an axis.
-///
-/// Not that this whole driver is `async`.
 pub struct Tmc2209Driver<'a, POUT, UART, D> {
+    /// Not enabled pin.
+    p_nen: POUT,
     /// OutputPin for `STEP`.
     p_step: POUT,
     /// OutputPin for `DIR`.
@@ -53,6 +53,7 @@ where
     ///
     /// This sets up a driver and configures it with the given [`Tmc2209Config`].
     pub async fn try_new(
+        p_nen: POUT,
         p_step: POUT,
         p_dir: POUT,
         driver: &'a Tmc2209Mutex<UART>,
@@ -61,6 +62,7 @@ where
         config: Tmc2209Config,
     ) -> Result<Self, MotorError> {
         let mut drv = Self {
+            p_nen,
             p_step,
             p_dir,
             driver,
@@ -126,8 +128,12 @@ where
     }
 
     /// Do the given number of steps.
-    async fn do_steps(&mut self, steps: u32, delay_ns: u32) -> Result<(), MotorError> {
+    async fn do_steps(&mut self, steps: u64, delay_ns: u32) -> Result<(), MotorError> {
+        self.p_nen
+            .set_low()
+            .map_err(|_| MotorError::OutputPinError)?;
         self.set_enabled(true).await?;
+
         for _ in 0..steps {
             self.p_step
                 .set_high()
@@ -141,6 +147,9 @@ where
         }
 
         self.set_enabled(false).await?;
+        self.p_nen
+            .set_high()
+            .map_err(|_| MotorError::OutputPinError)?;
 
         Ok(())
     }
@@ -153,8 +162,9 @@ where
     D: embedded_hal_async::delay::DelayNs,
 {
     type Config = Tmc2209Config;
+    type Status = DrvStatus;
 
-    async fn move_relative(&mut self, steps: u32, dir: Direction) -> Result<(), MotorError> {
+    async fn move_relative(&mut self, steps: u64, dir: Direction) -> Result<(), MotorError> {
         match dir {
             Direction::Positive => self
                 .p_dir
@@ -184,13 +194,6 @@ where
         // write gconf register
         self.write_register(&gconf).await?;
 
-        #[cfg(feature = "defmt")]
-        {
-            defmt::info!("Configuration: {}", &config);
-            let gc_read = self.read_register::<Gconf>().await?;
-            defmt::info!("GCONF read back: {:010b}", &gc_read);
-        }
-
         // set current
         self.locked_driver()
             .await
@@ -212,10 +215,18 @@ where
 
         Ok(())
     }
+
+    async fn get_status(&mut self) -> Result<Self::Status, MotorError> {
+        self.locked_driver()
+            .await
+            .drv_status_async()
+            .await
+            .map_err(|_| MotorError::CommunicationError)
+    }
 }
 
 /// The full configuration of the Tmc2209Driver.
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[cfg(feature = "defmt")]
 #[derive(defmt::Format)]
 pub struct Tmc2209Config {
@@ -232,7 +243,7 @@ pub struct Tmc2209Config {
 /// If you access the fields directly and enter values above the maximum, the maximum will simply be
 /// set. Alternatively, use the `set_` functions that return results and tell you if there was a
 /// range error.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg(feature = "defmt")]
 #[derive(defmt::Format)]
 pub struct CurrentConfig {
@@ -289,7 +300,7 @@ impl Default for CurrentConfig {
 }
 
 /// Movement configuration.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg(feature = "defmt")]
 #[derive(defmt::Format)]
 pub struct MoveConfig {
@@ -328,7 +339,7 @@ impl MoveConfig {
 }
 
 /// Mode of movement.
-#[derive(Copy, Clone, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[cfg(feature = "defmt")]
 #[derive(defmt::Format)]
 pub enum MoveMode {

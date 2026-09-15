@@ -1,4 +1,4 @@
-//! Motor control.
+//! Motor control for one axis.
 
 pub mod tmc2209;
 
@@ -14,6 +14,7 @@ pub enum Direction {
 /// This is the trait that every motor driver must implement to be compatible with our motor struct.
 pub trait MotorDriver {
     type Config;
+    type Status;
 
     /// Set the configuration of the Motor.
     #[must_use]
@@ -23,13 +24,20 @@ pub trait MotorDriver {
     #[must_use]
     fn move_relative(
         &mut self,
-        steps: u32,
+        steps: u64,
         dir: Direction,
     ) -> impl Future<Output = Result<(), MotorError>>;
+
+    /// Get the status of the motor driver.
+    #[must_use]
+    fn get_status(&mut self) -> impl Future<Output = Result<Self::Status, MotorError>>;
 }
 
 /// Errors that a motor might return.
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg(feature = "defmt")]
+#[derive(defmt::Format)]
+#[non_exhaustive]
 pub enum MotorError {
     /// Communication with the driver failed.
     CommunicationError,

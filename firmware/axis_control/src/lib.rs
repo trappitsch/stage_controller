@@ -31,7 +31,7 @@ where
     }
 
     //// TODO: Temporary
-    pub async fn move_steps(&mut self, steps: u32, dir: motor::Direction) {
+    pub async fn move_steps(&mut self, steps: u64, dir: motor::Direction) {
         self.motor
             .motor_driver
             .move_relative(steps, dir)
