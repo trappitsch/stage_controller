@@ -32,8 +32,7 @@ pub trait EncoderDriver {
 
 /// Errors that an encoder might return.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[cfg(feature = "defmt")]
-#[derive(defmt::Format)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum EncoderError {
     /// Communication with the encoder failed.

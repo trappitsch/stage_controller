@@ -1,0 +1,16 @@
+[package]
+name = "sc_driver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+env_logger = { workspace = true }
+ergot = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+
+icd = { workspace = true }
+thiserror = "2.0.21"
+
+[dev-dependencies]
+proptest = "1.11.0"

@@ -35,8 +35,7 @@ pub trait MotorDriver {
 
 /// Errors that a motor might return.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[cfg(feature = "defmt")]
-#[derive(defmt::Format)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum MotorError {
     /// Communication with the driver failed.

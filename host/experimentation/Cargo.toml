@@ -1,0 +1,12 @@
+[package]
+name = "experimentation"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+env_logger = { workspace = true }
+ergot = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+
+icd = { workspace = true }

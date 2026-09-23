@@ -1,0 +1,26 @@
+[package]
+name = "rp2350"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axis_control = { workspace = true }
+bbqueue = { workspace = true }
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+embassy-embedded-hal = { workspace = true }
+embassy-executor = { workspace = true }
+embassy-futures = { workspace = true }
+embassy-rp = { workspace = true }
+embassy-sync = { workspace = true }
+embassy-time = { workspace = true }
+embassy-usb = { workspace = true }
+ergot = { workspace = true }
+icd = { workspace = true }
+maitake-sync = { workspace = true }
+mutex = { workspace = true }
+panic-probe = { workspace = true }
+portable-atomic = { workspace = true }
+static_cell = { workspace = true }

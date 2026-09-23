@@ -227,8 +227,7 @@ where
 
 /// The full configuration of the Tmc2209Driver.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-#[cfg(feature = "defmt")]
-#[derive(defmt::Format)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Tmc2209Config {
     /// Set to true to invert the axis.
     pub invert: bool,
@@ -244,8 +243,7 @@ pub struct Tmc2209Config {
 /// set. Alternatively, use the `set_` functions that return results and tell you if there was a
 /// range error.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[cfg(feature = "defmt")]
-#[derive(defmt::Format)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CurrentConfig {
     /// Motor run current, 0-31: 0=1/32 max, ..., 31=32/32 max. Default: 31
     pub irun: u8,
@@ -301,8 +299,7 @@ impl Default for CurrentConfig {
 
 /// Movement configuration.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[cfg(feature = "defmt")]
-#[derive(defmt::Format)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MoveConfig {
     /// Microstep resolution configuration.
     pub microsteps: MicrostepResolution,
@@ -340,8 +337,7 @@ impl MoveConfig {
 
 /// Mode of movement.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-#[cfg(feature = "defmt")]
-#[derive(defmt::Format)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum MoveMode {
     /// Set to stealthchop.
     #[default]

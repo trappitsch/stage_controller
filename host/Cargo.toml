@@ -1,0 +1,22 @@
+[workspace]
+
+resolver = "3"
+members = ["experimentation","sc_driver"]
+
+[workspace.dependencies]
+env_logger = "0.11"
+ergot = { git = "https://github.com/jamesmunns/ergot.git", rev = "d42d38a", features = [
+    "tokio-std",
+    "nusb-v0_1",
+    "tokio-serial-v5",
+] }
+log = "0.4"
+tokio = { version = "1", features = [
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "time",
+    "io-util",
+] }
+
+icd = { path = "../icd" }
