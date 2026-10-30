@@ -3,17 +3,23 @@
 
 use core::pin::pin;
 
-use axis_control::{encoder::icmd, motor::tmc2209};
+use axis_control::{
+    encoder::icmd,
+    motor::{
+        Direction, MotorDriver,
+        tmc2209::{self, PioConfig},
+    },
+};
 use defmt::info;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDeviceWithConfig;
 use embassy_executor::Spawner;
 use embassy_rp::{
     bind_interrupts, gpio,
-    peripherals::{DMA_CH0, DMA_CH1, UART0, USB},
+    peripherals::{DMA_CH0, DMA_CH1, PIO0, PIO1, UART0, USB},
     spi, uart, usb,
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
-use embassy_time::{Delay, Duration, Ticker};
+use embassy_time::{Duration, Ticker};
 use embassy_usb::{Config, UsbDevice, driver::Driver};
 use ergot::{
     endpoint,
@@ -58,6 +64,8 @@ bind_interrupts!(pub struct Irqs {
     USBCTRL_IRQ => usb::InterruptHandler<USB>;
     UART0_IRQ => uart::BufferedInterruptHandler<UART0>;
     DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<DMA_CH0>, embassy_rp::dma::InterruptHandler<DMA_CH1>;
+    PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO0>;
+    PIO1_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO1>;
 });
 
 fn usb_config(serial: &'static str) -> Config<'static> {
@@ -105,18 +113,6 @@ async fn main(spawner: Spawner) {
     let ser_buf = core::str::from_utf8(ser_buf.as_slice()).unwrap();
 
     // SET UP THE MOTORS
-    // x motor
-    let xmot_address = 0x00;
-    let xmot_pout_step = gpio::Output::new(p.PIN_19, gpio::Level::Low);
-    let xmot_pout_dir = gpio::Output::new(p.PIN_18, gpio::Level::Low);
-    let xmot_pout_en = gpio::Output::new(p.PIN_20, gpio::Level::High);
-
-    // y motor
-    let ymot_address = 0x01;
-    let ymot_pout_step = gpio::Output::new(p.PIN_26, gpio::Level::Low);
-    let ymot_pout_dir = gpio::Output::new(p.PIN_22, gpio::Level::Low);
-    let ymot_pout_en = gpio::Output::new(p.PIN_21, gpio::Level::High);
-
     // Set up the buffered UART interface for async comms.
     let (tx_pin, rx_pin, uart) = (p.PIN_16, p.PIN_17, p.UART0);
     // set up 8 byte buffers for TX and RX (equal to command length).
@@ -140,7 +136,7 @@ async fn main(spawner: Spawner) {
     static MOTOR_DRIVER: StaticCell<tmc2209::Tmc2209Mutex<uart::BufferedUart>> = StaticCell::new();
     let shared_motor = MOTOR_DRIVER.init(Mutex::new(tmc2209::Tmc2209::new(uart, 0x00)));
 
-    // MOTOR CONFIG
+    // Motor configs
     let mot_current_config = tmc2209::CurrentConfig {
         irun: 11,
         ihold: 0,
@@ -157,25 +153,56 @@ async fn main(spawner: Spawner) {
         },
     };
 
-    // Create the x and y motor instances that we can now use to move around.
-    let x_motor = tmc2209::Tmc2209Driver::try_new(
+    // x motor setup and PIO init
+    let xmot_address = 0x00;
+    let xmot_pout_en = gpio::Output::new(p.PIN_20, gpio::Level::High);
+    let embassy_rp::pio::Pio {
+        common: xmot_pio_common,
+        irq0: xmot_pio_irq,
+        sm0: xmot_pio_sm,
+        ..
+    } = embassy_rp::pio::Pio::new(p.PIO0, Irqs);
+    let xmot_pio_config = PioConfig {
+        p_step: p.PIN_19,
+        p_dir: p.PIN_18,
+        common: xmot_pio_common,
+        irq: xmot_pio_irq,
+        sm: xmot_pio_sm,
+    };
+
+    // Create the x motor. this must for some reason be done before we init the PIO for y motor.
+    let mut x_motor = tmc2209::Tmc2209Driver::try_new(
         xmot_pout_en,
-        xmot_pout_step,
-        xmot_pout_dir,
+        xmot_pio_config,
         shared_motor,
         xmot_address,
-        Delay,
         motor_config,
     )
     .await
     .unwrap();
-    let y_motor = tmc2209::Tmc2209Driver::try_new(
+
+    // y motor setup and PIO init
+    let ymot_address = 0x01;
+    let ymot_pout_en = gpio::Output::new(p.PIN_21, gpio::Level::High);
+    let embassy_rp::pio::Pio {
+        common: ymot_pio_common,
+        irq0: ymot_pio_irq,
+        sm0: ymot_pio_sm,
+        ..
+    } = embassy_rp::pio::Pio::new(p.PIO1, Irqs);
+    let ymot_pio_config = PioConfig {
+        p_step: p.PIN_26,
+        p_dir: p.PIN_22,
+        common: ymot_pio_common,
+        irq: ymot_pio_irq,
+        sm: ymot_pio_sm,
+    };
+
+    let mut y_motor = tmc2209::Tmc2209Driver::try_new(
         ymot_pout_en,
-        ymot_pout_step,
-        ymot_pout_dir,
+        ymot_pio_config,
         shared_motor,
         ymot_address,
-        Delay,
         motor_config,
     )
     .await
@@ -220,10 +247,10 @@ async fn main(spawner: Spawner) {
     let yenc_cnt_cfg = icmd::CntCfg::Cnt1Bit48(yenc_cnt_setup);
 
     // encoders
-    let x_encoder = icmd::IcMdDriver::try_new(xenc_icmd, xenc_cnt_cfg)
+    let _x_encoder = icmd::IcMdDriver::try_new(xenc_icmd, xenc_cnt_cfg)
         .await
         .unwrap();
-    let y_encoder = icmd::IcMdDriver::try_new(yenc_icmd, yenc_cnt_cfg)
+    let _y_encoder = icmd::IcMdDriver::try_new(yenc_icmd, yenc_cnt_cfg)
         .await
         .unwrap();
 
@@ -259,6 +286,29 @@ async fn main(spawner: Spawner) {
     loop {
         ticker.next().await;
         // TODO: Feed a watchdog.
+
+        // FIXME: TODEL
+        info!("Move positive");
+        x_motor
+            .move_relative(10000, Direction::Positive)
+            .await
+            .unwrap();
+        y_motor
+            .move_relative(20000, Direction::Positive)
+            .await
+            .unwrap();
+
+        ticker.next().await;
+
+        info!("Move negative");
+        x_motor
+            .move_relative(10000, Direction::Negative)
+            .await
+            .unwrap();
+        y_motor
+            .move_relative(20000, Direction::Negative)
+            .await
+            .unwrap();
     }
 }
 

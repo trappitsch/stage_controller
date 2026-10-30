@@ -16,5 +16,9 @@ tmc2209-uart = { version = "0.1.0", default-features = false, features = [
 
 defmt = { workspace = true, optional = true }
 
+# TODO: Delete after upgrade packagages and PIO program part of new release
+embassy-rp = { workspace = true }
+fixed = "1.30.0"
+
 [features]
 defmt = ["dep:defmt", "ic-md/defmt", "tmc2209-uart/defmt"]

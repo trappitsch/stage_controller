@@ -1,5 +1,6 @@
 //! Motor control for one axis.
 
+pub mod pio_programs;
 pub mod tmc2209;
 
 /// Direction of a motor.
@@ -24,7 +25,7 @@ pub trait MotorDriver {
     #[must_use]
     fn move_relative(
         &mut self,
-        steps: u64,
+        steps: u32,
         dir: Direction,
     ) -> impl Future<Output = Result<(), MotorError>>;
 

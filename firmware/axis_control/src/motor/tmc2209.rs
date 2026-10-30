@@ -7,7 +7,11 @@
 //! The maximum current on this version is set to 1.7A. The jumper on the board must be set such
 //! that access via UART is possible.
 //! TODO: Jumper details
+//!
+//! TODO: Next steps:
+//! - Set speed when doing move_relative.
 
+use embassy_rp::{Peri, gpio, pio};
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     mutex::{Mutex, MutexGuard},
@@ -16,20 +20,24 @@ use embassy_sync::{
 use tmc2209_uart::{DrvStatus, Gconf, ReadableRegister, WritableRegister};
 pub use tmc2209_uart::{MicrostepResolution, Tmc2209};
 
-use crate::motor::{Direction, MotorDriver, MotorError};
+use crate::motor::{
+    Direction, MotorDriver, MotorError,
+    pio_programs::{
+        PioStepDirProgram,
+        pio_step_dir::{PioStepDir, StepDir, StepPulseTiming},
+    },
+};
 
 /// We wrap our Tmc2209 in a mutex to be able to write to.
 pub type Tmc2209Mutex<UART> = Mutex<CriticalSectionRawMutex, Tmc2209<UART>>;
 pub type Tmc2209MutexGuard<'a, UART> = MutexGuard<'a, CriticalSectionRawMutex, Tmc2209<UART>>;
 
 /// TMC2209 driver that provides a [`MotorDriver`] compatible interface for controlling an axis.
-pub struct Tmc2209Driver<'a, POUT, UART, D> {
+pub struct Tmc2209Driver<'a, POUT, UART, PIO: pio::Instance, const SM: usize> {
     /// Not enabled pin.
     p_nen: POUT,
-    /// OutputPin for `STEP`.
-    p_step: POUT,
-    /// OutputPin for `DIR`.
-    p_dir: POUT,
+    /// The PioStepDir program that can driver our stepper.
+    stepper: PioStepDir<'a, PIO, SM>,
     /// [`embassy_sync::mutex::Mutex`] holding our [`Tmc2209`] driver with a UART interface.
     driver: &'a Tmc2209Mutex<UART>,
     /// The address of the driver.
@@ -37,37 +45,33 @@ pub struct Tmc2209Driver<'a, POUT, UART, D> {
     /// This is needed as we have to set the driver address whenever we acquire the lock on the
     /// driver, since the UART is shared with up to 4 TMC2209s.
     address: u8,
-    /// An async delay provider.
-    delay: D,
     /// The last set configuration.
     config: Tmc2209Config,
 }
 
-impl<'a, POUT, UART, D> Tmc2209Driver<'a, POUT, UART, D>
+impl<'a, POUT, UART, PIO, const SM: usize> Tmc2209Driver<'a, POUT, UART, PIO, SM>
 where
     POUT: embedded_hal::digital::OutputPin,
     UART: embedded_io_async::Read + embedded_io_async::Write,
-    D: embedded_hal_async::delay::DelayNs,
+    PIO: pio::Instance,
 {
     /// Get a new TMC2209 motor driver with these settings.
     ///
     /// This sets up a driver and configures it with the given [`Tmc2209Config`].
     pub async fn try_new(
         p_nen: POUT,
-        p_step: POUT,
-        p_dir: POUT,
+        pio_config: PioConfig<'a, PIO, impl pio::PioPin, impl gpio::Pin, SM>,
         driver: &'a Tmc2209Mutex<UART>,
         address: u8,
-        delay: D,
         config: Tmc2209Config,
     ) -> Result<Self, MotorError> {
+        let stepper = pio_config.get_stepper();
+
         let mut drv = Self {
             p_nen,
-            p_step,
-            p_dir,
+            stepper,
             driver,
             address,
-            delay,
             config: Default::default(),
         };
 
@@ -83,7 +87,21 @@ where
     }
 
     /// Enable or disable a motor.
+    ///
+    /// This sets the pin as well as the setting in the UART driver.
     async fn set_enabled(&mut self, is_enabled: bool) -> Result<(), MotorError> {
+        // set the pin
+        if is_enabled {
+            self.p_nen
+                .set_low()
+                .map_err(|_| MotorError::OutputPinError)?;
+        } else {
+            self.p_nen
+                .set_high()
+                .map_err(|_| MotorError::OutputPinError)?;
+        };
+
+        // set the driver
         self.locked_driver()
             .await
             .set_enabled_async(is_enabled)
@@ -126,58 +144,23 @@ where
 
         Ok(())
     }
-
-    /// Do the given number of steps.
-    async fn do_steps(&mut self, steps: u64, delay_ns: u32) -> Result<(), MotorError> {
-        self.p_nen
-            .set_low()
-            .map_err(|_| MotorError::OutputPinError)?;
-        self.set_enabled(true).await?;
-
-        for _ in 0..steps {
-            self.p_step
-                .set_high()
-                .map_err(|_| MotorError::OutputPinError)?;
-            self.delay.delay_ns(delay_ns).await;
-
-            self.p_step
-                .set_low()
-                .map_err(|_| MotorError::OutputPinError)?;
-            self.delay.delay_ns(delay_ns).await;
-        }
-
-        self.set_enabled(false).await?;
-        self.p_nen
-            .set_high()
-            .map_err(|_| MotorError::OutputPinError)?;
-
-        Ok(())
-    }
 }
 
-impl<'a, POUT, UART, D> MotorDriver for Tmc2209Driver<'a, POUT, UART, D>
+impl<'a, POUT, UART, PIO, const SM: usize> MotorDriver for Tmc2209Driver<'a, POUT, UART, PIO, SM>
 where
     POUT: embedded_hal::digital::OutputPin,
     UART: embedded_io_async::Read + embedded_io_async::Write,
-    D: embedded_hal_async::delay::DelayNs,
+    PIO: pio::Instance,
 {
     type Config = Tmc2209Config;
     type Status = DrvStatus;
 
-    async fn move_relative(&mut self, steps: u64, dir: Direction) -> Result<(), MotorError> {
-        match dir {
-            Direction::Positive => self
-                .p_dir
-                .set_low()
-                .map_err(|_| MotorError::OutputPinError)?,
-            Direction::Negative => self
-                .p_dir
-                .set_high()
-                .map_err(|_| MotorError::OutputPinError)?,
-        }
+    async fn move_relative(&mut self, steps: u32, dir: Direction) -> Result<(), MotorError> {
+        self.set_enabled(true).await?;
 
-        let delay_ns = self.config.move_config.get_delay_ns_rough_half_step();
-        self.do_steps(steps, delay_ns).await?;
+        self.stepper.move_with_dir(steps, dir.into()).await;
+
+        self.set_enabled(false).await?;
 
         Ok(())
     }
@@ -222,6 +205,59 @@ where
             .drv_status_async()
             .await
             .map_err(|_| MotorError::CommunicationError)
+    }
+}
+
+/// PIO Configuration.
+///
+/// Sturcture that contains everything required to make a PIO configuration.
+pub struct PioConfig<'a, PIO, PIOPIN, GPIOPIN, const SM: usize>
+where
+    PIO: pio::Instance,
+    PIOPIN: pio::PioPin,
+    GPIOPIN: gpio::Pin,
+{
+    pub p_step: Peri<'a, PIOPIN>,
+    pub p_dir: Peri<'a, GPIOPIN>,
+    pub common: pio::Common<'a, PIO>,
+    pub irq: pio::Irq<'a, PIO, SM>,
+    pub sm: pio::StateMachine<'a, PIO, SM>,
+}
+
+impl<'a, PIO, PIOPIN, GPIOPIN, const SM: usize> PioConfig<'a, PIO, PIOPIN, GPIOPIN, SM>
+where
+    PIO: pio::Instance,
+    PIOPIN: pio::PioPin,
+    GPIOPIN: gpio::Pin,
+{
+    /// Get the stepper instance with a given PIO frequenc
+    fn get_stepper(mut self) -> PioStepDir<'a, PIO, SM> {
+        let prg = PioStepDirProgram::new_with_timing(&mut self.common, StepPulseTiming::Cycles68);
+        let mut stepper = PioStepDir::new(
+            &mut self.common,
+            self.sm,
+            self.p_step,
+            self.p_dir,
+            self.irq,
+            &prg,
+        );
+
+        // TODO: Can i change the speed with the frequency (Hz)?
+        // What is the max value? The min value we know.
+        // Maybe we should do this when we move.
+        //
+        // ANSWER: Yes: this can change the speed at which the motor runs.
+        // Check out the min and max frequency on how they are defined in the PIO programs.
+        // This should be the new speed at which we will move around.
+        //
+        // So: min at the the Cycles68 settings is around 34 and max 2205882.
+        // The motor starts stalling at around >20_000 max, so there's no reason to go higher.
+        // Minimum setting of one to a few k is probably good.
+        //
+        // Needs error checking on what the user sets, but otherwise keep it free range and give
+        // some docs advice.
+        stepper.set_frequency(8_000).unwrap();
+        stepper
     }
 }
 
@@ -344,4 +380,13 @@ pub enum MoveMode {
     StealthChop,
     /// Set to spreadcycle chopper.
     SpreadCycleChopper,
+}
+
+impl From<Direction> for StepDir {
+    fn from(value: Direction) -> Self {
+        match value {
+            Direction::Positive => Self::Forward,
+            Direction::Negative => Self::Reverse,
+        }
+    }
 }
