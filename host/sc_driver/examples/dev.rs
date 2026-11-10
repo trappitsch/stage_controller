@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use icd::commands2d::Position;
+use icd::commands2d::{Position, StageMoveCmd};
 use sc_driver::communicator::StageCommunicator;
 
 #[tokio::main]
@@ -21,15 +21,14 @@ async fn main() {
 
     println!("{:?}", comm.ping().await);
 
-    // a absolute motion
-    let mabs_pos = comm.move_absolute(new_pos.clone()).await.unwrap();
-    assert_eq!(&mabs_pos, &new_pos);
+    // an absolute motion
+    let cmd = StageMoveCmd::Absolute(new_pos.clone());
+    comm.stage_move(&cmd).await.unwrap();
 
     // a relative motion
-    let mrel_pos = comm.move_relative(new_pos.clone()).await.unwrap();
-    assert_eq!(&mrel_pos, &new_pos);
+    let cmd = StageMoveCmd::Relative(new_pos.clone());
+    comm.stage_move(&cmd).await.unwrap();
 
     // homing command
-    let home_pos = comm.home().await.unwrap();
-    assert_eq!(home_pos, Position::default());
+    comm.stage_move(&StageMoveCmd::Home).await.unwrap();
 }

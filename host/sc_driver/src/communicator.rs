@@ -7,9 +7,7 @@ use std::{pin::pin, time::Duration};
 use ergot::{
     Address, socket::HeaderMessage, toolkits::nusb_v0_1::RouterStack, well_known::ErgotPingEndpoint,
 };
-use icd::commands2d::{
-    CurrentPositionTopic, HomeEndpoint, MoveAbsEndpoint, MoveRelEndpoint, Position,
-};
+use icd::commands2d::{CurrentPositionTopic, Position, StageMoveCmd, StageMoveEndpoint};
 use thiserror::Error;
 use tokio::time::Instant;
 
@@ -81,47 +79,61 @@ impl StageCommunicator {
         }
     }
 
-    /// Home the stage
-    pub async fn home(&self) -> Result<Position, StageCommunicatorError> {
+    /// Stage movement commands.
+    pub async fn stage_move(&self, cmd: &StageMoveCmd) -> Result<(), StageCommunicatorError> {
         let addr = self.wait_for_address_discovery().await?;
 
         let client = self
             .stack
             .endpoints()
-            .client::<HomeEndpoint>(addr, Some("command2d/home"));
+            .client::<StageMoveEndpoint>(addr, Some("command2d/stage_move"));
         client
-            .request(&())
+            .request(&cmd)
             .await
             .map_err(|_| StageCommunicatorError::ReqResponseError)
     }
 
-    /// Move to a new, absolute position.
-    pub async fn move_absolute(&self, pos: Position) -> Result<Position, StageCommunicatorError> {
-        let addr = self.wait_for_address_discovery().await?;
+    // /// Home the stage
+    // pub async fn home(&self) -> Result<Position, StageCommunicatorError> {
+    //     let addr = self.wait_for_address_discovery().await?;
 
-        let client = self
-            .stack
-            .endpoints()
-            .client::<MoveAbsEndpoint>(addr, Some("command2d/move_absolute"));
-        client
-            .request(&pos)
-            .await
-            .map_err(|_| StageCommunicatorError::ReqResponseError)
-    }
+    //     let client = self
+    //         .stack
+    //         .endpoints()
+    //         .client::<StageMoveEndpoint>(addr, Some("command2d/stage_move"));
+    //     client
+    //         .request(&StageMoveCmd::Home)
+    //         .await
+    //         .map_err(|_| StageCommunicatorError::ReqResponseError)
+    // }
 
-    /// Move relative to the current position.
-    pub async fn move_relative(&self, pos: Position) -> Result<Position, StageCommunicatorError> {
-        let addr = self.wait_for_address_discovery().await?;
+    // /// Move to a new, absolute position.
+    // pub async fn move_absolute(&self, pos: Position) -> Result<Position, StageCommunicatorError> {
+    //     let addr = self.wait_for_address_discovery().await?;
 
-        let client = self
-            .stack
-            .endpoints()
-            .client::<MoveRelEndpoint>(addr, Some("command2d/move_relative"));
-        client
-            .request(&pos)
-            .await
-            .map_err(|_| StageCommunicatorError::ReqResponseError)
-    }
+    //     let client = self
+    //         .stack
+    //         .endpoints()
+    //         .client::<StageMoveEndpoint>(addr, Some("command2d/stage_move"));
+    //     client
+    //         .request(&StageMoveCmd::Absolute(pos))
+    //         .await
+    //         .map_err(|_| StageCommunicatorError::ReqResponseError)
+    // }
+
+    // /// Move relative to the current position.
+    // pub async fn move_relative(&self, pos: Position) -> Result<Position, StageCommunicatorError> {
+    //     let addr = self.wait_for_address_discovery().await?;
+
+    //     let client = self
+    //         .stack
+    //         .endpoints()
+    //         .client::<StageMoveEndpoint>(addr, Some("command2d/stage_move"));
+    //     client
+    //         .request(&StageMoveCmd::Relative(pos))
+    //         .await
+    //         .map_err(|_| StageCommunicatorError::ReqResponseError)
+    // }
 
     /// Pin the device.
     pub async fn ping(&self) -> Result<HeaderMessage<u32>, StageCommunicatorError> {

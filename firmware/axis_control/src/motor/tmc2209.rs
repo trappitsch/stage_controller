@@ -21,7 +21,7 @@ use tmc2209_uart::{DrvStatus, Gconf, ReadableRegister, WritableRegister};
 pub use tmc2209_uart::{MicrostepResolution, Tmc2209};
 
 use crate::motor::{
-    Direction, MotorDriver, MotorError,
+    AxisId, Direction, MotorDriver, MotorError,
     pio_programs::{
         PioStepDirProgram,
         pio_step_dir::{PioStepDir, StepDir, StepPulseTiming},
@@ -86,30 +86,6 @@ where
         drv
     }
 
-    /// Enable or disable a motor.
-    ///
-    /// This sets the pin as well as the setting in the UART driver.
-    async fn set_enabled(&mut self, is_enabled: bool) -> Result<(), MotorError> {
-        // set the pin
-        if is_enabled {
-            self.p_nen
-                .set_low()
-                .map_err(|_| MotorError::OutputPinError)?;
-        } else {
-            self.p_nen
-                .set_high()
-                .map_err(|_| MotorError::OutputPinError)?;
-        };
-
-        // set the driver
-        self.locked_driver()
-            .await
-            .set_enabled_async(is_enabled)
-            .await
-            .map_err(|_| MotorError::CommunicationError)?;
-        Ok(())
-    }
-
     /// Set the microstep resolution.
     async fn set_microstep_resolution(
         &mut self,
@@ -155,13 +131,37 @@ where
     type Config = Tmc2209Config;
     type Status = DrvStatus;
 
-    async fn move_relative(&mut self, steps: u32, dir: Direction) -> Result<(), MotorError> {
-        self.set_enabled(true).await?;
+    fn get_axis_id(&self) -> AxisId {
+        match self.address {
+            0x00 => AxisId::X,
+            0x01 => AxisId::Y,
+            _ => AxisId::Z,
+        }
+    }
 
+    async fn set_enabled(&mut self, is_enabled: bool) -> Result<(), MotorError> {
+        // set the pin
+        if is_enabled {
+            self.p_nen
+                .set_low()
+                .map_err(|_| MotorError::OutputPinError)?;
+        } else {
+            self.p_nen
+                .set_high()
+                .map_err(|_| MotorError::OutputPinError)?;
+        };
+
+        // set the driver
+        self.locked_driver()
+            .await
+            .set_enabled_async(is_enabled)
+            .await
+            .map_err(|_| MotorError::CommunicationError)?;
+        Ok(())
+    }
+
+    async fn move_steps(&mut self, steps: u32, dir: Direction) -> Result<(), MotorError> {
         self.stepper.move_with_dir(steps, dir.into()).await;
-
-        self.set_enabled(false).await?;
-
         Ok(())
     }
 

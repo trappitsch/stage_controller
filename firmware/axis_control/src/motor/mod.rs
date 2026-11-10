@@ -3,6 +3,14 @@
 pub mod pio_programs;
 pub mod tmc2209;
 
+/// Axis identification.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, defmt::Format)]
+pub enum AxisId {
+    X,
+    Y,
+    Z,
+}
+
 /// Direction of a motor.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Direction {
@@ -17,13 +25,22 @@ pub trait MotorDriver {
     type Config;
     type Status;
 
+    /// Get axis
+    fn get_axis_id(&self) -> AxisId;
+
     /// Set the configuration of the Motor.
     #[must_use]
     fn set_config(&mut self, config: Self::Config) -> impl Future<Output = Result<(), MotorError>>;
 
-    /// Move the motor in a given direction by a certain number of steps.
+    /// Enable/disable the motor.
     #[must_use]
-    fn move_relative(
+    fn set_enabled(&mut self, enabled: bool) -> impl Future<Output = Result<(), MotorError>>;
+
+    /// Move the motor in a given direction by a certain number of steps.
+    ///
+    /// Note that this does not enable or disable the motor. If necessary, you need to manually enable/disable the motors.
+    #[must_use]
+    fn move_steps(
         &mut self,
         steps: u32,
         dir: Direction,
