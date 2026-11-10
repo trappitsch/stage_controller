@@ -4,15 +4,21 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+embassy-executor = { workspace = true }
+embassy-futures = { workspace = true }
 embassy-sync = { workspace = true }
 embedded-hal = { workspace = true }
 embedded-hal-async = { workspace = true }
 embedded-io-async = { workspace = true }
 
 ic-md = { workspace = true }
-tmc2209-uart = { version = "0.1.0", default-features = false, features = [
+tmc2209-uart = {
+  version = "0.1.0",
+  default-features = false,
+  features = [
     "async",
-] }
+  ]
+}
 
 defmt = { workspace = true, optional = true }
 

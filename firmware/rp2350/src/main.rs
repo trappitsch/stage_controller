@@ -1,24 +1,26 @@
 #![no_std]
 #![no_main]
 
-use core::pin::pin;
-
 use axis_control::{
-    encoder::icmd,
+    AxisControl,
+    encoder::{EncoderDriver, icmd},
     motor::{
-        Direction, MotorDriver,
+        pio_programs::{PioStepDirProgram, pio_step_dir::StepPulseTiming},
         tmc2209::{self, PioConfig},
     },
+    tasks::{AxisMoveChannel, AxisStopSignal},
 };
 use defmt::info;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDeviceWithConfig;
 use embassy_executor::Spawner;
 use embassy_rp::{
     bind_interrupts, gpio,
-    peripherals::{DMA_CH0, DMA_CH1, PIO0, PIO1, UART0, USB},
+    peripherals::{DMA_CH0, DMA_CH1, PIO0, UART0, USB},
     spi, uart, usb,
 };
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+use embassy_sync::{
+    blocking_mutex::raw::NoopRawMutex, channel::Channel, mutex::Mutex, signal::Signal,
+};
 use embassy_time::{Duration, Ticker};
 use embassy_usb::{Config, UsbDevice, driver::Driver};
 use ergot::{
@@ -26,14 +28,21 @@ use ergot::{
     exports::bbqueue::{prod_cons::framed::FramedConsumer, traits::coordination::cs::CsCoord},
     toolkits::embassy_usb_v0_6 as kit,
 };
-use icd::commands2d::{HomeEndpoint, MoveAbsEndpoint, MoveRelEndpoint, Position};
 use mutex::raw_impls::cs::CriticalSectionRawMutex;
 use static_cell::{ConstStaticCell, StaticCell};
 
 use {defmt_rtt as _, panic_probe as _};
 
 mod comms;
+mod helpers;
 
+// Channels to communicate within firmware.
+static XAX_MOVE_CHANNEL: AxisMoveChannel = Channel::new();
+static XAX_STOP_SIGNAL: AxisStopSignal = Signal::new();
+static YAX_MOVE_CHANNEL: AxisMoveChannel = Channel::new();
+static YAX_STOP_SIGNAL: AxisStopSignal = Signal::new();
+
+// Ergot specific configs
 const OUT_QUEUE_SIZE: usize = 4096;
 const MAX_PACKET_SIZE: usize = 1024;
 
@@ -65,7 +74,6 @@ bind_interrupts!(pub struct Irqs {
     UART0_IRQ => uart::BufferedInterruptHandler<UART0>;
     DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<DMA_CH0>, embassy_rp::dma::InterruptHandler<DMA_CH1>;
     PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO0>;
-    PIO1_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO1>;
 });
 
 fn usb_config(serial: &'static str) -> Config<'static> {
@@ -153,27 +161,31 @@ async fn main(spawner: Spawner) {
         },
     };
 
-    // x motor setup and PIO init
-    let xmot_address = 0x00;
-    let xmot_pout_en = gpio::Output::new(p.PIN_20, gpio::Level::High);
+    // Both motors on PIO0
     let embassy_rp::pio::Pio {
-        common: xmot_pio_common,
-        irq0: xmot_pio_irq,
-        sm0: xmot_pio_sm,
+        mut common,
+        irq0,
+        irq1,
+        sm0,
+        sm1,
         ..
     } = embassy_rp::pio::Pio::new(p.PIO0, Irqs);
-    let xmot_pio_config = PioConfig {
-        p_step: p.PIN_19,
-        p_dir: p.PIN_18,
-        common: xmot_pio_common,
-        irq: xmot_pio_irq,
-        sm: xmot_pio_sm,
-    };
+    let step_prg = PioStepDirProgram::new_with_timing(&mut common, StepPulseTiming::Cycles68);
 
-    // Create the x motor. this must for some reason be done before we init the PIO for y motor.
-    let mut x_motor = tmc2209::Tmc2209Driver::try_new(
+    let xmot_step = common.make_pio_pin(p.PIN_19);
+    let ymot_step = common.make_pio_pin(p.PIN_26);
+
+    let xmot_address = 0x00;
+    let xmot_pout_en = gpio::Output::new(p.PIN_20, gpio::Level::High);
+    let x_motor = tmc2209::Tmc2209Driver::try_new(
         xmot_pout_en,
-        xmot_pio_config,
+        PioConfig {
+            p_step: xmot_step,
+            p_dir: p.PIN_18,
+            program: &step_prg,
+            irq: irq0,
+            sm: sm0,
+        },
         shared_motor,
         xmot_address,
         motor_config,
@@ -181,26 +193,18 @@ async fn main(spawner: Spawner) {
     .await
     .unwrap();
 
-    // y motor setup and PIO init
+    // // y motor setup and PIO init
     let ymot_address = 0x01;
     let ymot_pout_en = gpio::Output::new(p.PIN_21, gpio::Level::High);
-    let embassy_rp::pio::Pio {
-        common: ymot_pio_common,
-        irq0: ymot_pio_irq,
-        sm0: ymot_pio_sm,
-        ..
-    } = embassy_rp::pio::Pio::new(p.PIO1, Irqs);
-    let ymot_pio_config = PioConfig {
-        p_step: p.PIN_26,
-        p_dir: p.PIN_22,
-        common: ymot_pio_common,
-        irq: ymot_pio_irq,
-        sm: ymot_pio_sm,
-    };
-
-    let mut y_motor = tmc2209::Tmc2209Driver::try_new(
+    let y_motor = tmc2209::Tmc2209Driver::try_new(
         ymot_pout_en,
-        ymot_pio_config,
+        PioConfig {
+            p_step: ymot_step,
+            p_dir: p.PIN_22,
+            program: &step_prg,
+            irq: irq1,
+            sm: sm1,
+        },
         shared_motor,
         ymot_address,
         motor_config,
@@ -247,12 +251,16 @@ async fn main(spawner: Spawner) {
     let yenc_cnt_cfg = icmd::CntCfg::Cnt1Bit48(yenc_cnt_setup);
 
     // encoders
-    let _x_encoder = icmd::IcMdDriver::try_new(xenc_icmd, xenc_cnt_cfg)
+    let mut _x_encoder = icmd::IcMdDriver::try_new(xenc_icmd, xenc_cnt_cfg)
         .await
         .unwrap();
-    let _y_encoder = icmd::IcMdDriver::try_new(yenc_icmd, yenc_cnt_cfg)
+    let mut _y_encoder = icmd::IcMdDriver::try_new(yenc_icmd, yenc_cnt_cfg)
         .await
         .unwrap();
+
+    // create the axis
+    let xax = AxisControl::new(x_motor);
+    let yax = AxisControl::new(y_motor);
 
     // USB/RPC INIT
     let driver = usb::Driver::new(p.USB, Irqs);
@@ -278,37 +286,25 @@ async fn main(spawner: Spawner) {
 
     // Stage comms tasks.
     // spawner.spawn(comms::current_position_broadcast().unwrap());
-    spawner.spawn(stage_controller_move_abs_demo().unwrap());
-    spawner.spawn(stage_controller_move_rel_demo().unwrap());
-    spawner.spawn(stage_controller_home_demo().unwrap());
+    spawner.spawn(comms::x_axis_mover(xax).unwrap());
+    spawner.spawn(comms::y_axis_mover(yax).unwrap());
+
+    // TODO:
+    // - Test this from the simple CLItried it once or twice, always gave up very fast... that was before my
+    spawner.spawn(comms::stage_move_listener().unwrap());
 
     let mut ticker = Ticker::every(Duration::from_secs(3));
+
+    _x_encoder.reset().await.unwrap();
+    _y_encoder.reset().await.unwrap();
+    let _xstatus = _x_encoder.get_status().await.unwrap();
+    let _ystatus = _y_encoder.get_status().await.unwrap();
     loop {
         ticker.next().await;
-        // TODO: Feed a watchdog.
+        let xpos = _x_encoder.get_position().await.unwrap();
+        let ypos = _y_encoder.get_position().await.unwrap();
 
-        // FIXME: TODEL
-        info!("Move positive");
-        x_motor
-            .move_relative(10000, Direction::Positive)
-            .await
-            .unwrap();
-        y_motor
-            .move_relative(20000, Direction::Positive)
-            .await
-            .unwrap();
-
-        ticker.next().await;
-
-        info!("Move negative");
-        x_motor
-            .move_relative(10000, Direction::Negative)
-            .await
-            .unwrap();
-        y_motor
-            .move_relative(20000, Direction::Negative)
-            .await
-            .unwrap();
+        defmt::info!("xpos: {}, ypos: {}", xpos, ypos)
     }
 }
 
@@ -340,58 +336,4 @@ async fn run_tx(
         kit::USB_FS_MAX_PACKET_SIZE,
     )
     .await;
-}
-
-#[embassy_executor::task]
-async fn stage_controller_move_abs_demo() {
-    let socket = STACK
-        .endpoints()
-        .bounded_server::<MoveAbsEndpoint, 2>(Some("command2d/move_absolute"));
-    let socket = pin!(socket);
-    let mut hdl = socket.attach();
-
-    loop {
-        let _ = hdl
-            .serve(async |pos| {
-                info!("Move abs pkg: {:?}", pos);
-                pos.clone()
-            })
-            .await;
-    }
-}
-
-#[embassy_executor::task]
-async fn stage_controller_move_rel_demo() {
-    let socket = STACK
-        .endpoints()
-        .bounded_server::<MoveRelEndpoint, 2>(Some("command2d/move_relative"));
-    let socket = pin!(socket);
-    let mut hdl = socket.attach();
-
-    loop {
-        let _ = hdl
-            .serve(async |pos| {
-                info!("Move relpkg: {:?}", pos);
-                pos.clone()
-            })
-            .await;
-    }
-}
-
-#[embassy_executor::task]
-async fn stage_controller_home_demo() {
-    let socket = STACK
-        .endpoints()
-        .bounded_server::<HomeEndpoint, 2>(Some("command2d/home"));
-    let socket = pin!(socket);
-    let mut hdl = socket.attach();
-
-    loop {
-        let _ = hdl
-            .serve(async |_| {
-                info!("Homing...");
-                Position::default()
-            })
-            .await;
-    }
 }

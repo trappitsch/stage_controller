@@ -4,42 +4,59 @@ members = ["axis_control", "rp2350"]
 resolver = "3"
 
 [workspace.dependencies]
-bbqueue = { version = "0.7", default-features = false, features = [
+bbqueue = {
+  version = "0.7",
+  default-features = false,
+  features = [
     "critical-section",
     "maitake-sync-0_3",
-] }
+  ]
+}
 cortex-m = { version = "0.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"
 defmt = "1"
 defmt-rtt = "1"
 embassy-embedded-hal = { version = "0.6.0", features = ["defmt"] }
-embassy-executor = { version = "0.10", features = [
-    "executor-thread",
+embassy-executor = {
+  version = "0.10",
+  features = [
+    "defmt",
     "executor-interrupt",
-    "defmt",
+    "executor-thread",
     "platform-cortex-m",
-] }
+  ]
+}
 embassy-futures = "0.1.2"
-embassy-rp = { version = "0.10", features = [
-    "rp235xa",
-    "defmt",
-    "unstable-pac",
-    "time-driver",
+embassy-rp = {
+  version = "0.10",
+  features = [
     "critical-section-impl",
-] }
-embassy-time = { version = "0.5", features = [
+    "defmt",
+    "rp235xa",
+    "time-driver",
+    "unstable-pac",
+  ]
+}
+embassy-sync = "0.8"
+embassy-time = {
+  version = "0.5",
+  features = [
     "defmt",
     "defmt-timestamp-uptime",
-] }
-embassy-sync = "0.8"
+  ]
+}
 embassy-usb = "0.6"
-ergot = { git = "https://github.com/jamesmunns/ergot.git", rev = "d42d38a", features = [
-    "embassy-usb-v0_6",
-    "defmt-v1",
-] }
 embedded-hal = "1"
 embedded-hal-async = "1"
 embedded-io-async = "0.7.0"
+ergot = {
+  git = "https://github.com/jamesmunns/ergot.git",
+  rev = "d42d38a",
+  features = [
+    "defmt-v1",
+    "embassy-usb-v0_6",
+  ]
+}
 ic-md = { version = "0.2.0", default-features = false, features = ["async"] }
 maitake-sync = { version = "0.3", default-features = false }
 mutex = "1"
@@ -51,11 +68,11 @@ axis_control = { path = "axis_control", features = ["defmt"] }
 icd = { path = "../icd", features = ["defmt"] }
 
 [profile.release]
+opt-level = "z"
 debug = 2
 lto = true
-opt-level = 'z'
-codegen-units = 1
 incremental = false
+codegen-units = 1
 
 [profile.ci]
 inherits = "dev"
@@ -64,7 +81,7 @@ strip = true
 debug-assertions = true
 overflow-checks = true
 lto = false
-panic = 'unwind'
+panic = "unwind"
 incremental = false
 codegen-units = 256
 rpath = false

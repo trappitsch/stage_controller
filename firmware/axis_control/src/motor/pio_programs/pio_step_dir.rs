@@ -10,7 +10,7 @@ use embassy_rp::{
     Peri, clocks,
     gpio::{Level, Output, Pin as GpioPin},
     pio::{
-        self, Common, Config, Direction, Instance, Irq, LoadedProgram, Pin as PioPinHandle, PioPin,
+        self, Common, Config, Direction, Instance, Irq, LoadedProgram, Pin as PioPinHandle,
         StateMachine,
     },
 };
@@ -163,15 +163,12 @@ pub struct PioStepDir<'d, T: Instance, const SM: usize> {
 impl<'d, T: Instance, const SM: usize> PioStepDir<'d, T, SM> {
     /// Configure a state machine to generate STEP pulses and bind a DIR pin.
     pub fn new(
-        pio: &mut Common<'d, T>,
         mut sm: StateMachine<'d, T, SM>,
-        step_pin: Peri<'d, impl PioPin>,
+        step: PioPinHandle<'d, T>,
         dir_pin: Peri<'d, impl GpioPin>,
         irq: Irq<'d, T, SM>,
         program: &PioStepDirProgram<'d, T>,
     ) -> Self {
-        let step = pio.make_pio_pin(step_pin);
-
         let mut cfg = Config::default();
         cfg.set_set_pins(&[&step]);
         cfg.clock_divider =

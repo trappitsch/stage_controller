@@ -21,10 +21,10 @@ use tmc2209_uart::{DrvStatus, Gconf, ReadableRegister, WritableRegister};
 pub use tmc2209_uart::{MicrostepResolution, Tmc2209};
 
 use crate::motor::{
-    Direction, MotorDriver, MotorError,
+    AxisId, Direction, MotorDriver, MotorError,
     pio_programs::{
         PioStepDirProgram,
-        pio_step_dir::{PioStepDir, StepDir, StepPulseTiming},
+        pio_step_dir::{PioStepDir, StepDir},
     },
 };
 
@@ -60,7 +60,7 @@ where
     /// This sets up a driver and configures it with the given [`Tmc2209Config`].
     pub async fn try_new(
         p_nen: POUT,
-        pio_config: PioConfig<'a, PIO, impl pio::PioPin, impl gpio::Pin, SM>,
+        pio_config: PioConfig<'_, 'a, PIO, impl gpio::Pin, SM>,
         driver: &'a Tmc2209Mutex<UART>,
         address: u8,
         config: Tmc2209Config,
@@ -84,30 +84,6 @@ where
         let mut drv = self.driver.lock().await;
         drv.set_slave_addr(self.address);
         drv
-    }
-
-    /// Enable or disable a motor.
-    ///
-    /// This sets the pin as well as the setting in the UART driver.
-    async fn set_enabled(&mut self, is_enabled: bool) -> Result<(), MotorError> {
-        // set the pin
-        if is_enabled {
-            self.p_nen
-                .set_low()
-                .map_err(|_| MotorError::OutputPinError)?;
-        } else {
-            self.p_nen
-                .set_high()
-                .map_err(|_| MotorError::OutputPinError)?;
-        };
-
-        // set the driver
-        self.locked_driver()
-            .await
-            .set_enabled_async(is_enabled)
-            .await
-            .map_err(|_| MotorError::CommunicationError)?;
-        Ok(())
     }
 
     /// Set the microstep resolution.
@@ -155,13 +131,37 @@ where
     type Config = Tmc2209Config;
     type Status = DrvStatus;
 
-    async fn move_relative(&mut self, steps: u32, dir: Direction) -> Result<(), MotorError> {
-        self.set_enabled(true).await?;
+    fn get_axis_id(&self) -> AxisId {
+        match self.address {
+            0x00 => AxisId::X,
+            0x01 => AxisId::Y,
+            _ => AxisId::Z,
+        }
+    }
 
+    async fn set_enabled(&mut self, is_enabled: bool) -> Result<(), MotorError> {
+        // set the pin
+        if is_enabled {
+            self.p_nen
+                .set_low()
+                .map_err(|_| MotorError::OutputPinError)?;
+        } else {
+            self.p_nen
+                .set_high()
+                .map_err(|_| MotorError::OutputPinError)?;
+        };
+
+        // set the driver
+        self.locked_driver()
+            .await
+            .set_enabled_async(is_enabled)
+            .await
+            .map_err(|_| MotorError::CommunicationError)?;
+        Ok(())
+    }
+
+    async fn move_steps(&mut self, steps: u32, dir: Direction) -> Result<(), MotorError> {
         self.stepper.move_with_dir(steps, dir.into()).await;
-
-        self.set_enabled(false).await?;
-
         Ok(())
     }
 
@@ -211,36 +211,26 @@ where
 /// PIO Configuration.
 ///
 /// Sturcture that contains everything required to make a PIO configuration.
-pub struct PioConfig<'a, PIO, PIOPIN, GPIOPIN, const SM: usize>
+pub struct PioConfig<'p, 'a, PIO, GPIOPIN, const SM: usize>
 where
     PIO: pio::Instance,
-    PIOPIN: pio::PioPin,
     GPIOPIN: gpio::Pin,
 {
-    pub p_step: Peri<'a, PIOPIN>,
+    pub p_step: pio::Pin<'a, PIO>,
     pub p_dir: Peri<'a, GPIOPIN>,
-    pub common: pio::Common<'a, PIO>,
+    pub program: &'p PioStepDirProgram<'a, PIO>,
     pub irq: pio::Irq<'a, PIO, SM>,
     pub sm: pio::StateMachine<'a, PIO, SM>,
 }
 
-impl<'a, PIO, PIOPIN, GPIOPIN, const SM: usize> PioConfig<'a, PIO, PIOPIN, GPIOPIN, SM>
+impl<'p, 'a, PIO, GPIOPIN, const SM: usize> PioConfig<'p, 'a, PIO, GPIOPIN, SM>
 where
     PIO: pio::Instance,
-    PIOPIN: pio::PioPin,
     GPIOPIN: gpio::Pin,
 {
     /// Get the stepper instance with a given PIO frequenc
-    fn get_stepper(mut self) -> PioStepDir<'a, PIO, SM> {
-        let prg = PioStepDirProgram::new_with_timing(&mut self.common, StepPulseTiming::Cycles68);
-        let mut stepper = PioStepDir::new(
-            &mut self.common,
-            self.sm,
-            self.p_step,
-            self.p_dir,
-            self.irq,
-            &prg,
-        );
+    fn get_stepper(self) -> PioStepDir<'a, PIO, SM> {
+        let mut stepper = PioStepDir::new(self.sm, self.p_step, self.p_dir, self.irq, self.program);
 
         // TODO: Can i change the speed with the frequency (Hz)?
         // What is the max value? The min value we know.
